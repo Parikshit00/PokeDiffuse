@@ -6,13 +6,17 @@ import PIL
 import PIL.Image
 import sys
 import torch
+import os
+import cv2
+import numpy as np
+import random
 torch.set_grad_enabled(False)
 torch.backends.cudnn.enabled = False
 
 args_strModel = 'bsds500' # only 'bsds500' for now
-args_strIn = './dataset/Abra/sample.jpg'
+args_strIn = './static/sample2.jpg'
 args_strOut = './out.png'
-cuda = False
+args_cuda = False
 
 for strOption, strArg in getopt.getopt(sys.argv[1:], '', [
     'model=',
@@ -23,7 +27,7 @@ for strOption, strArg in getopt.getopt(sys.argv[1:], '', [
     if strOption == '--model' and strArg != '': args_strModel = strArg # which model to use
     if strOption == '--in' and strArg != '': args_strIn = strArg # path to the input image
     if strOption == '--out' and strArg != '': args_strOut = strArg # path to where the output should be stored
-    if strOption == '--cuda' and strArg.lower() in ['true', 'false']: use_cuda = strArg.lower() == 'true' # whether to use CUDA
+    if strOption == '--cuda' and strArg != '': args_cuda = strArg # whether to use CUDA
 # end
 netNetwork = None
 
@@ -114,7 +118,7 @@ class Network(torch.nn.Module):
 
         return self.netCombine(torch.cat([ tenScoreOne, tenScoreTwo, tenScoreThr, tenScoreFou, tenScoreFiv ], 1))
 
-def estimate(tenInput):
+def estimate(tenInput, use_cuda):
     global netNetwork
 
     if netNetwork is None:
@@ -132,14 +136,45 @@ def estimate(tenInput):
         netNetwork(tenInput.cuda().view(1, 3, intHeight, intWidth))[0, :, :, :].cpu()
     else:
         return netNetwork(tenInput.cpu().view(1, 3, intHeight, intWidth))[0, :, :, :].cpu()
-# end
+
+def random_delete(contour_image, n_b, w_b, h_b, delete_probability=0.7):
+    height, width = contour_image.shape
+    for _ in range(n_b):
+        if random.random() < delete_probability:
+            x = random.randint(0, width - w_b)
+            y = random.randint(0, height - h_b)
+            contour_image[y:y+h_b, x:x+w_b] = 255
+    return contour_image
+
+def hed2sketch(edges_image, out_sketch):
+    _, edges_image = cv2.threshold(edges_image, 127, 255, cv2.THRESH_BINARY)
+    contours, _ = cv2.findContours(edges_image, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    contour_image = np.zeros_like(edges_image)
+    cv2.drawContours(contour_image, contours, -1, (255, 255, 255), 1)
+    contour_image = cv2.bitwise_not(contour_image)
+    print("Getting contour image...")
+    print(contour_image.shape)
+    n_b = 150
+    w_b = 30
+    h_b = 30
+    delete_probability = 0.5  # 50% chance to delete each block
+    contour_image = random_delete(contour_image, n_b, w_b, h_b, delete_probability)
+    cv2.imwrite(out_sketch, contour_image)
 
 if __name__ == '__main__':
     in_img = PIL.Image.open(args_strIn)
     in_img = in_img.resize((480, 320))
     tenInput = torch.FloatTensor(numpy.ascontiguousarray(numpy.array(in_img)[:, :, ::-1].transpose(2, 0, 1).astype(numpy.float32) * (1.0 / 255.0)))
-
-    tenOutput = estimate(tenInput)
-
-    PIL.Image.fromarray((tenOutput.clip(0.0, 1.0).numpy().transpose(1, 2, 0)[:, :, 0] * 255.0).astype(numpy.uint8)).save(args_strOut)
+    if args_cuda == 'True':
+        args_cuda = True
+    tenOutput = estimate(tenInput, args_cuda)
+    img_array = (tenOutput.clip(0.0, 1.0).numpy().transpose(1, 2, 0)[:, :, 0] * 255.0).astype(numpy.uint8)
+    hed = PIL.Image.fromarray(img_array)
+    hed.save(args_strOut)
+    filename, extension = os.path.splitext(os.path.basename(args_strOut))
+    new_filename = filename + "_sketch" + extension
+    opencv_image = cv2.imread(args_strOut, cv2.IMREAD_GRAYSCALE)
+    hed2sketch(opencv_image, new_filename)
+    
+    
 # end
